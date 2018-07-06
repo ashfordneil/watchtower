@@ -31,7 +31,8 @@ var (
 	noRestart    bool
 	enableLabel  bool
 	notifier     *notifications.Notifier
-	timeout		 time.Duration
+	startTimeout time.Duration
+	stopTimeout	 time.Duration
 )
 
 func init() {
@@ -196,8 +197,12 @@ func before(c *cli.Context) error {
 
 	cleanup = c.GlobalBool("cleanup")
 	noRestart = c.GlobalBool("no-restart")
-	timeout = c.GlobalDuration("stop-timeout")
-	if timeout < 0 {
+    startTimeout = c.GlobalDuration("start-timeout")
+    if startTimeout < 0 {
+        log.Fatal("Please specify a positive value for timeout value.")
+    }
+	stopTimeout = c.GlobalDuration("stop-timeout")
+	if stopTimeout < 0 {
 		log.Fatal("Please specify a positive value for timeout value.")
 	}
 	enableLabel = c.GlobalBool("label-enable")
@@ -234,7 +239,7 @@ func start(c *cli.Context) error {
 			case v := <-tryLockSem:
 				defer func() { tryLockSem <- v }()
 				notifier.StartNotification()
-				if err := actions.Update(client, filter, cleanup, noRestart, timeout); err != nil {
+				if err := actions.Update(client, filter, cleanup, noRestart, startTimeout, stopTimeout); err != nil {
 					log.Println(err)
 				}
 				notifier.SendNotification()

@@ -14,9 +14,9 @@ var (
 
 // Update looks at the running Docker containers to see if any of the images
 // used to start those containers have been updated. If a change is detected in
-// any of the images, the associated containers are stopped and restarted with
-// the new image.
-func Update(client container.Client, filter container.Filter, cleanup bool, noRestart bool, timeout time.Duration) error {
+// any of the images, the new image is started, and then the old container is
+// stopped
+func Update(client container.Client, filter container.Filter, cleanup bool, noRestart bool, startTimeout time.Duration, stopTimeout time.Duration) error {
 	log.Debug("Checking containers for updated images")
 
 	containers, err := client.ListContainers(filter)
@@ -38,9 +38,45 @@ func Update(client container.Client, filter container.Filter, cleanup bool, noRe
 		return err
 	}
 
-	checkDependencies(containers)
+    checkDependencies(containers)
 
-	// Stop stale containers in reverse order
+    // Start new versions of the stale containers (in sorted order). To prevent naming conflicts
+    // with existing containers, rename the running version of the container to a random string
+    // beforehand. If any error occurs starting up the new container, remove the stale label so
+    // that the old container isn't killed
+    for _, container := range containers {
+        if !container.Stale {
+            continue
+        }
+
+        if noRestart && !container.IsWatchtower() {
+            continue
+        }
+
+        oldName := container.Name()
+        if err := client.RenameContainer(container, randName()); err != nil {
+            log.Error(err)
+            container.Stale = false
+            continue
+        }
+
+        if err := client.StartContainer(container, startTimeout); err != nil {
+            log.Error(err)
+            container.Stale = false
+
+            // if we can't start the new container, undo the rename of the old container
+            if err := client.RenameContainer(container, oldName); err != nil {
+                log.Error(err)
+            }
+
+            continue
+        }
+    }
+
+
+	// Stop stale containers in reverse order, deleting images as we go. If starting up the new
+    // version of the container failed, the Stale flag will be false by this stage so we won't be
+    // deleting containers that haven't been replaced (unless noRestart is set).
 	for i := len(containers) - 1; i >= 0; i-- {
 		container := containers[i]
 
@@ -48,37 +84,20 @@ func Update(client container.Client, filter container.Filter, cleanup bool, noRe
 			continue
 		}
 
-		if container.Stale {
-			if err := client.StopContainer(container, timeout); err != nil {
-				log.Error(err)
-			}
-		}
-	}
+        if !container.Stale {
+            continue
+        }
 
-	// Restart stale containers in sorted order
-	for _, container := range containers {
-		if container.Stale {
-			// Since we can't shutdown a watchtower container immediately, we need to
-			// start the new one while the old one is still running. This prevents us
-			// from re-using the same container name so we first rename the current
-			// instance so that the new one can adopt the old name.
-			if container.IsWatchtower() {
-				if err := client.RenameContainer(container, randName()); err != nil {
-					log.Error(err)
-					continue
-				}
-			}
+        if err := client.StopContainer(container, stopTimeout); err != nil {
+            log.Error(err)
+            continue
+        }
 
-			if !noRestart {
-				if err := client.StartContainer(container); err != nil {
-					log.Error(err)
-				}
-			}
-
-			if cleanup {
-				client.RemoveImage(container)
-			}
-		}
+        if cleanup {
+            if err := client.RemoveImage(container); err != nil {
+                log.Error(err)
+            }
+        }
 	}
 
 	return nil

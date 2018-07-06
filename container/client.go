@@ -1,6 +1,7 @@
 package container
 
 import (
+    "errors"
 	"fmt"
 	"io/ioutil"
 	"time"
@@ -21,7 +22,7 @@ const (
 type Client interface {
 	ListContainers(Filter) ([]Container, error)
 	StopContainer(Container, time.Duration) error
-	StartContainer(Container) error
+	StartContainer(Container, time.Duration) error
 	RenameContainer(Container, string) error
 	IsContainerStale(Container) (bool, error)
 	RemoveImage(Container) error
@@ -117,7 +118,7 @@ func (client dockerClient) StopContainer(c Container, timeout time.Duration) err
 	return nil
 }
 
-func (client dockerClient) StartContainer(c Container) error {
+func (client dockerClient) StartContainer(c Container, waitTime time.Duration) error {
 	bg := context.Background()
 	config := c.runtimeConfig()
 	hostConfig := c.hostConfig()
@@ -167,8 +168,15 @@ func (client dockerClient) StartContainer(c Container) error {
 		return err
 	}
 
-	return nil
+    time.Sleep(waitTime)
 
+    if ci, err := client.api.ContainerInspect(bg, c.ID()); err != nil {
+        return err
+    } else if !ci.State.Running {
+        return errors.New(fmt.Sprintf("Container %s started unsuccessfully", name))
+    } else {
+        return nil
+    }
 }
 
 func (client dockerClient) RenameContainer(c Container, newName string) error {
